@@ -1,0 +1,6 @@
+{
+  "name": "QuizMaster",
+  "description": "Real-Time Multiplayer Quiz Platform with competitive gaming energy, AI-powered quiz generation, and live interactive leaderboards.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
