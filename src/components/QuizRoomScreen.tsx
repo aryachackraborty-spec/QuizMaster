@@ -5,6 +5,8 @@ import {
   RotateCw, ArrowRight, CheckCircle2, AlertTriangle, MessageSquare, Copy 
 } from "lucide-react";
 import { Room, Player } from "../types";
+import { subscribeToRoomMultiplayer } from "../lib/firebaseService";
+import { auth } from "../lib/firebase";
 
 interface QuizRoomScreenProps {
   username: string;
@@ -41,29 +43,30 @@ export default function QuizRoomScreen({ username, avatar, initialMode, onBackTo
   const [starting, setStarting] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
-  // Lobby Sync Polling Effect
+  // Lobby Sync real-time Subscribe Effect
   useEffect(() => {
     if (subview !== "lobby" || !currentRoom) return;
 
-    const interval = setInterval(() => {
-      fetch(`/api/rooms/${currentRoom.code}`)
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.success) {
-            setCurrentRoom(data.room);
-            
-            // Check if game status transitioned to Active externally
-            if (data.room.status === "active" && myPlayerProfile) {
-              clearInterval(interval);
-              onGameStarted(data.room.code, myPlayerProfile);
-            }
+    const unsubscribe = subscribeToRoomMultiplayer(
+      currentRoom.code,
+      (updatedRoom) => {
+        setCurrentRoom(updatedRoom);
+        
+        // Find my profile inside updated players list
+        const me = updatedRoom.players.find((p) => p.username === username);
+        if (me) {
+          setMyPlayerProfile(me);
+          // Check if game status transitioned to Active externally
+          if (updatedRoom.status === "active") {
+            onGameStarted(updatedRoom.code, me);
           }
-        })
-        .catch((err) => console.error("Lobby synchronization failure: ", err));
-    }, 1500);
+        }
+      },
+      (err) => console.error("Lobby subscription error: ", err)
+    );
 
-    return () => clearInterval(interval);
-  }, [subview, currentRoom, myPlayerProfile, onGameStarted]);
+    return () => unsubscribe();
+  }, [subview, currentRoom?.code, username, onGameStarted]);
 
   // Handle Create Room
   const handleCreateRoom = async () => {

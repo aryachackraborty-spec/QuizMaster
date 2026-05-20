@@ -5,6 +5,7 @@ import {
   HelpCircle, ChevronRight, CheckCircle2, AlertTriangle, AlertCircle, RotateCw
 } from "lucide-react";
 import { Room, Player, QuizQuestion } from "../types";
+import { subscribeToRoomMultiplayer, submitMultiplayerReactionBurst } from "../lib/firebaseService";
 
 interface LiveGameArenaProps {
   roomCode: string;
@@ -36,24 +37,23 @@ export default function LiveGameArena({ roomCode, currentPlayer, onGameEnded }: 
   const lastTimeRef = useRef<number>(Date.now());
   const tickTimerRef = useRef<any>(null);
 
-  // Sync Room data with backend
-  const syncRoom = async () => {
-    try {
-      const response = await fetch(`/api/rooms/${roomCode}`);
-      const data = await response.json();
-      if (data.success) {
-        setRoom(data.room);
+  // Sync Room data with backend utilizing Firestore snapshot listener
+  useEffect(() => {
+    const unsubscribe = subscribeToRoomMultiplayer(
+      roomCode,
+      (updatedRoom) => {
+        setRoom(updatedRoom);
 
         // Transition out of game to Results if status became Ended
-        if (data.room.status === "ended") {
-          onGameEnded(data.room);
+        if (updatedRoom.status === "ended") {
+          onGameEnded(updatedRoom);
           return;
         }
 
         // Detect if Question changed from Server index
-        const qIndex = data.room.currentQuestionIndex;
-        if (qIndex >= 0 && qIndex < data.room.questions.length) {
-          const fetchedQ = data.room.questions[qIndex];
+        const qIndex = updatedRoom.currentQuestionIndex;
+        if (qIndex >= 0 && qIndex < updatedRoom.questions.length) {
+          const fetchedQ = updatedRoom.questions[qIndex];
           if (!currentQuestion || currentQuestion.id !== fetchedQ.id) {
             // New question arrived! Reset client answer states
             setCurrentQuestion(fetchedQ);
@@ -65,9 +65,8 @@ export default function LiveGameArena({ roomCode, currentPlayer, onGameEnded }: 
         }
 
         // Synchronize Server Reactions into our local floating emitter
-        const serverReactions = data.room.reactions || [];
+        const serverReactions = updatedRoom.reactions || [];
         const now = Date.now();
-        // Emit active server reactions fired in the last 1.8 seconds that aren't already drawn
         serverReactions.forEach((rx: any) => {
           if (now - rx.timestamp < 1800) {
             setFloatingEmojis((prev) => {
@@ -84,18 +83,12 @@ export default function LiveGameArena({ roomCode, currentPlayer, onGameEnded }: 
             });
           }
         });
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
+      },
+      (err) => console.error("Snapshot synchronization failure:", err)
+    );
 
-  // Immediate initial load + fast synchronization loop
-  useEffect(() => {
-    syncRoom();
-    const interval = setInterval(syncRoom, 1500);
-    return () => clearInterval(interval);
-  }, [roomCode, currentQuestion]);
+    return () => unsubscribe();
+  }, [roomCode, currentQuestion, onGameEnded]);
 
   // Client Tick timer effect
   useEffect(() => {
@@ -137,8 +130,6 @@ export default function LiveGameArena({ roomCode, currentPlayer, onGameEnded }: 
           timeSpentMs: submissionMs,
         }),
       });
-      // Force sync right away to fetch scores
-      setTimeout(syncRoom, 400);
     } catch (err) {
       console.error(err);
     }
@@ -151,13 +142,12 @@ export default function LiveGameArena({ roomCode, currentPlayer, onGameEnded }: 
       setSelectedAnswer(null);
       setHasSubmitted(false);
       setTimeSpent(0);
-      syncRoom();
     } catch (err) {
       console.error(err);
     }
   };
 
-  // Fire Reaction immediately to backend
+  // Fire Reaction immediately to Firestore directly
   const handleFireEmoji = async (emoji: string) => {
     // Optimistic local spawn
     const localId = `local-rx-${Date.now()}-${Math.random()}`;
@@ -172,15 +162,7 @@ export default function LiveGameArena({ roomCode, currentPlayer, onGameEnded }: 
     ]);
 
     try {
-      await fetch(`/api/rooms/${roomCode}/reaction`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          emoji,
-          userId: currentPlayer.id,
-          username: currentPlayer.username,
-        }),
-      });
+      await submitMultiplayerReactionBurst(roomCode, emoji, currentPlayer.id, currentPlayer.username);
     } catch (err) {
       console.error(err);
     }

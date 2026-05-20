@@ -6,6 +6,9 @@ import QuizRoomScreen from "./components/QuizRoomScreen";
 import LiveGameArena from "./components/LiveGameArena";
 import ResultsScreen from "./components/ResultsScreen";
 import { Player, Room } from "./types";
+import { auth, db } from "./lib/firebase";
+import { onAuthStateChanged, signOut } from "firebase/auth";
+import { doc, onSnapshot } from "firebase/firestore";
 
 type ScreenState = "landing" | "auth" | "dashboard" | "room" | "game" | "results";
 
@@ -20,27 +23,67 @@ export default function App() {
   const [activePlayer, setActivePlayer] = useState<Player | null>(null);
   const [completedRoom, setCompletedRoom] = useState<Room | null>(null);
 
-  // Sync session profiles from localStorage
+  // Sync session profiles from Firebase Auth real-time
   useEffect(() => {
-    const savedUser = localStorage.getItem("quizmaster_username");
-    const savedAvatar = localStorage.getItem("quizmaster_avatar");
-    if (savedUser) {
-      setUsername(savedUser);
-      setAvatar(savedAvatar || "⚡");
-      setScreen("dashboard");
-    }
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        // Listen directly to user document profile sync
+        const userRef = doc(db, "users", user.uid);
+        const unsubProfile = onSnapshot(userRef, (docSnap) => {
+          if (docSnap.exists()) {
+            const stats = docSnap.data();
+            setUsername(stats.username || "Contender");
+            setAvatar(stats.avatar || "⚡");
+            setScreen("dashboard");
+          } else {
+            setUsername(user.displayName || "Contender");
+            setAvatar("⚡");
+            setScreen("dashboard");
+          }
+        }, (err) => console.log("Profile state listener delay..."));
+        
+        return () => unsubProfile();
+      } else {
+        // Only reset to landing if we are not in Local Sandbox Bypass Mode
+        if (localStorage.getItem("quizmaster_bypass") !== "true") {
+          setUsername("");
+          setAvatar("⚡");
+          setScreen("landing");
+        } else {
+          // Keep active bypassed username & avatar from local state
+          const savedUser = localStorage.getItem("quizmaster_username") || "Contender_Guest";
+          const savedAvatar = localStorage.getItem("quizmaster_avatar") || "⚡";
+          setUsername(savedUser);
+          setAvatar(savedAvatar);
+          setScreen("dashboard");
+        }
+      }
+    });
+
+    return () => unsubscribe();
   }, []);
 
   // Set successfullyauthenticated identities
-  const handleAuthSuccess = (name: string, pAvatar: string) => {
+  const handleAuthSuccess = (name: string, pAvatar: string, bypass: boolean = false) => {
     setUsername(name);
     setAvatar(pAvatar);
-    localStorage.setItem("quizmaster_username", name);
-    localStorage.setItem("quizmaster_avatar", pAvatar);
+    if (bypass) {
+      localStorage.setItem("quizmaster_bypass", "true");
+      localStorage.setItem("quizmaster_username", name);
+      localStorage.setItem("quizmaster_avatar", pAvatar);
+    } else {
+      localStorage.removeItem("quizmaster_bypass");
+    }
     setScreen("dashboard");
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error("Logout failure: ", err);
+    }
+    localStorage.removeItem("quizmaster_bypass");
     localStorage.removeItem("quizmaster_username");
     localStorage.removeItem("quizmaster_avatar");
     setUsername("");

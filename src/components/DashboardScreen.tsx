@@ -1,10 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "motion/react";
 import { 
   Trophy, Zap, Flame, Calendar, Plus, DoorOpen, Award, ArrowUpRight, 
   ChevronRight, CircleDot, RefreshCw, BarChart2, Star
 } from "lucide-react";
 import { UserStats } from "../types";
+import { auth, db } from "../lib/firebase";
+import { doc, onSnapshot } from "firebase/firestore";
+import { getGlobalLeaderboard } from "../lib/firebaseService";
 
 interface DashboardScreenProps {
   username: string;
@@ -14,45 +17,78 @@ interface DashboardScreenProps {
   onLogout: () => void;
 }
 
-// Initial User statistics configuration
+// Default User statistics configuration used as a fallback or starting point
 const INITIAL_STATS: UserStats = {
   username: "Contender",
   avatar: "⚡",
-  xp: 4320,
-  level: 8,
-  streakDays: 7,
-  gamesPlayed: 18,
-  correctAnswersRate: 85,
+  xp: 120,
+  level: 1,
+  streakDays: 1,
+  gamesPlayed: 0,
+  correctAnswersRate: 0,
   badges: [
-    { id: "b1", name: "Speed Demon", description: "Answered within 1.5s", icon: "⚡", rarity: "rare" },
-    { id: "b2", name: "V8 Optimizer", description: "Perfect score in Web Trivia", icon: "🦊", rarity: "epic" },
-    { id: "b3", name: "Gemini Pioneer", description: "Played custom Generated quiz", icon: "🧠", rarity: "legendary" },
-    { id: "b4", name: "Gladiator", description: "Won 5 games consecutively", icon: "🛡️", rarity: "common" },
+    { id: "b3", name: "Gemini Pioneer", description: "Played custom Generated quiz", icon: "🧠", rarity: "legendary" }
   ],
   achievements: [
-    { id: "a1", name: "Synthesizer Pilot", target: 5, progress: 4, icon: "🤖" },
-    { id: "a2", name: "Perfect compilation", target: 10, progress: 8, icon: "🎯" },
-    { id: "a3", name: "Streak Legend", target: 10, progress: 7, icon: "🔥" },
+    { id: "a1", name: "Synthesizer Pilot", target: 5, progress: 1, icon: "🤖" },
+    { id: "a2", name: "Perfect compilation", target: 10, progress: 0, icon: "🎯" },
+    { id: "a3", name: "Streak Legend", target: 10, progress: 1, icon: "🔥" },
   ],
 };
 
-const HISTORY_LOGS = [
-  { room: "Silicon Valley Giants", date: "Today", rank: "1st Place", score: "4,620 XP", status: "win" },
-  { room: "Elite Web Engineering", date: "Yesterday", rank: "2nd Place", score: "3,810 XP", status: "runnerup" },
-  { room: "Cyberpunk Lore", date: "3 days ago", rank: "4th Place", score: "1,200 XP", status: "loss" },
-];
-
 export default function DashboardScreen({ username, avatar, onNavigateCreate, onNavigateJoin, onLogout }: DashboardScreenProps) {
-  const [stats] = useState<UserStats>({
+  const [stats, setStats] = useState<UserStats>({
     ...INITIAL_STATS,
     username,
     avatar,
   });
 
-  // Calculate percentage of level-up
-  const nextLevelXp = 5000;
-  const currLevelBaseXp = 4000;
-  const levelPercentage = ((stats.xp - currLevelBaseXp) / (nextLevelXp - currLevelBaseXp)) * 100;
+  const [leaderboard, setLeaderboard] = useState<UserStats[]>([]);
+  const [loadingLB, setLoadingLB] = useState(true);
+
+  // Subscribe to raw profile data and retrieve global rankings from Firestore
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+
+    // Listen to their active user stats profile
+    const unsub = onSnapshot(doc(db, "users", uid), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        setStats({
+          username: data.username || username,
+          avatar: data.avatar || avatar,
+          xp: data.xp || 0,
+          level: data.level || 1,
+          streakDays: data.streakDays || 1,
+          gamesPlayed: data.gamesPlayed || 0,
+          correctAnswersRate: data.correctAnswersRate || 0,
+          badges: data.badges || INITIAL_STATS.badges,
+          achievements: data.achievements || INITIAL_STATS.achievements
+        });
+      }
+    });
+
+    // Populate Leaderboard list on mount
+    getGlobalLeaderboard()
+      .then((data) => {
+        setLeaderboard(data);
+      })
+      .catch((err) => console.error("Could not sync leaderboard rankings:", err))
+      .finally(() => setLoadingLB(false));
+
+    return () => unsub();
+  }, [username, avatar]);
+
+  // Dynamic Level thresholds calculation
+  const xpInCurrentLevel = stats.xp;
+  const levelFloor = Math.pow(stats.level - 1, 2) * 100;
+  const levelCeil = Math.pow(stats.level, 2) * 100;
+  const nextLevelXp = levelCeil;
+  
+  const xpDifference = levelCeil - levelFloor;
+  const currentProgressXp = stats.xp - levelFloor;
+  const levelPercentage = xpDifference > 0 ? Math.min(100, Math.max(0, (currentProgressXp / xpDifference) * 100)) : 100;
 
   return (
     <div className="relative min-h-screen bg-[#020203] text-zinc-100 py-12 px-4 sm:px-6 lg:px-8 overflow-hidden">
@@ -251,37 +287,44 @@ export default function DashboardScreen({ username, avatar, onNavigateCreate, on
                 </div>
               </div>
 
-              {/* Tournament History Ledger */}
-              <div className="glass-panel rounded-3xl p-6 border border-white/10 space-y-4">
+              {/* Global Leaderboard Area */}
+              <div className="glass-panel rounded-3xl p-6 border border-white/10 space-y-4 max-h-[350px] overflow-y-auto">
                 <div className="flex items-center justify-between font-mono font-bold">
-                  <div className="text-[10px] text-zinc-400 uppercase tracking-wider">Tournament Ledger</div>
-                  <span className="text-[10px] text-zinc-550">{stats.gamesPlayed} match sessions</span>
+                  <div className="text-[10px] text-blue-400 uppercase tracking-wider">Top Contestants</div>
+                  <span className="text-[10px] text-zinc-500">Global Leaderboard</span>
                 </div>
-                <h4 className="font-display text-sm font-bold text-slate-200 leading-none uppercase tracking-tight">Activity History</h4>
+                <h4 className="font-display text-sm font-bold text-slate-200 leading-none uppercase tracking-tight">XP Rankings</h4>
 
                 <div className="space-y-3">
-                  {HISTORY_LOGS.map((item, idx) => (
-                    <div 
-                      key={idx} 
-                      className="flex items-center justify-between p-2.5 bg-white/[0.01] border border-white/5 rounded-xl hover:bg-white/[0.03] transition-all"
-                    >
-                      <div className="space-y-0.5">
-                        <div className="text-xs font-semibold text-white">{item.room}</div>
-                        <div className="text-[9px] font-mono text-zinc-500 font-bold">{item.date} &middot; {item.score}</div>
+                  {loadingLB ? (
+                    <div className="text-center py-6 text-xs font-mono text-zinc-600 uppercase animate-pulse">Syncing Rankings...</div>
+                  ) : leaderboard.length === 0 ? (
+                    <div className="text-center py-6 text-xs font-mono text-zinc-500 uppercase">Grid unoccupied</div>
+                  ) : (
+                    leaderboard.map((item, idx) => (
+                      <div 
+                        key={idx} 
+                        className={`flex items-center justify-between p-2.5 bg-white/[0.01] border rounded-xl hover:bg-white/[0.03] transition-all ${
+                          item.username === stats.username ? "border-blue-500/40 bg-blue-500/5 shadow-[0_0_15px_rgba(59,130,246,0.1)]" : "border-white/5"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <span className="text-xs font-mono font-black text-rose-500 w-4">#{idx + 1}</span>
+                          <span className="text-lg">{item.avatar}</span>
+                          <div className="space-y-0.5">
+                            <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                              {item.username}
+                              {idx === 0 && <span className="text-xs">👑</span>}
+                            </div>
+                            <div className="text-[9px] font-mono text-zinc-500 font-bold">LVL {item.level || 1} AGENT</div>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-xs font-mono font-bold text-amber-400">{item.xp} XP</span>
+                        </div>
                       </div>
-                      <div className="text-right">
-                        <span className={`text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 rounded border ${
-                          item.status === "win" 
-                            ? "bg-blue-400/10 text-blue-400 border-blue-500/20" 
-                            : item.status === "runnerup" 
-                              ? "bg-indigo-400/10 text-indigo-400 border-indigo-500/20" 
-                              : "bg-slate-800/40 text-slate-500 border-white/5"
-                        }`}>
-                          {item.rank}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
               </div>
             </div>

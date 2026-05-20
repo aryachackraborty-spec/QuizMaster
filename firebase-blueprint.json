@@ -1,0 +1,81 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with experience points, achievements, and stats.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Unique Firebase Authentication UID." },
+        "username": { "type": "string", "description": "Display name of the user." },
+        "avatar": { "type": "string", "description": "Avatar character or emoji." },
+        "xp": { "type": "integer", "description": "Global Experience Points." },
+        "level": { "type": "integer", "description": "Current agent level calculated from XP." },
+        "streakDays": { "type": "integer", "description": "Daily login streak." },
+        "gamesPlayed": { "type": "integer", "description": "Total matches participated." },
+        "correctAnswersRate": { "type": "number", "description": "Percentage of correct answers." },
+        "coins": { "type": "integer", "description": "Accumulated game gold/currency." },
+        "wins": { "type": "integer", "description": "Total quiz room custom arena wins." },
+        "badges": { "type": "array", "description": "Earned honorary digital badges." },
+        "achievements": { "type": "array", "description": "Special action milestones tracker progress." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Account registration timestamp." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last stats or details sync timestamp." }
+      },
+      "required": ["uid", "username", "avatar", "xp", "level", "streakDays", "gamesPlayed", "correctAnswersRate", "coins", "createdAt", "updatedAt"]
+    },
+    "Room": {
+      "title": "Room",
+      "description": "Multiplayer quiz match room state.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "description": "Unique room invite code." },
+        "quizTitle": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "difficulty": { "type": "string" },
+        "status": { "type": "string", "enum": ["lobby", "active", "ended"] },
+        "currentQuestionIndex": { "type": "integer" },
+        "timer": { "type": "integer", "description": "Question countdown timer seconds." },
+        "hostId": { "type": "string", "description": "UID of the room creator or active host." },
+        "questions": { "type": "array", "description": "Static array of custom generated quiz questions." },
+        "reactions": { "type": "array", "description": "Array of active custom emoji bursts." },
+        "activityFeed": { "type": "array", "description": "Lobby action updates list." },
+        "lastUpdate": { "type": "integer", "description": "Timestamp in milliseconds of the last live tick." },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "quizTitle", "description", "category", "difficulty", "status", "currentQuestionIndex", "timer", "hostId", "questions", "reactions", "activityFeed", "lastUpdate", "createdAt"]
+    },
+    "Player": {
+      "title": "Player",
+      "description": "Participant details and scores mapped under an active room space.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Player identity UID." },
+        "username": { "type": "string" },
+        "avatar": { "type": "string" },
+        "score": { "type": "integer" },
+        "streak": { "type": "integer", "description": "Current active answering streak during this match." },
+        "comboCount": { "type": "integer" },
+        "isBot": { "type": "boolean" },
+        "isReady": { "type": "boolean" },
+        "lastAnswerTime": { "type": "integer" },
+        "lastAnswerCorrect": { "type": "boolean" },
+        "joinedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "username", "avatar", "score", "streak", "comboCount", "isBot", "isReady", "joinedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile and statistics collections."
+    },
+    "/rooms/{roomCode}": {
+      "schema": "Room",
+      "description": "Main multiplayer lobby states."
+    },
+    "/rooms/{roomCode}/players/{playerId}": {
+      "schema": "Player",
+      "description": "Subcollection mapping contestants inside a match lobby."
+    }
+  }
+}

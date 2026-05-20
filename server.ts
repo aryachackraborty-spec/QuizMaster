@@ -3,8 +3,17 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { initializeApp } from "firebase/app";
+import { initializeFirestore, doc, setDoc, updateDoc, collection } from "firebase/firestore";
+import firebaseConfig from "./firebase-applet-config.json";
 
 dotenv.config();
+
+// Initialize Firebase App & Firestore Database on custom backend server
+const firebaseApp = initializeApp(firebaseConfig);
+const db = initializeFirestore(firebaseApp, {
+  experimentalForceLongPolling: true,
+}, firebaseConfig.firestoreDatabaseId);
 
 // Initialize the Google GenAI SDK with recommended precautions
 const ai = new GoogleGenAI({
@@ -43,6 +52,7 @@ interface Player {
   isReady: boolean;
   lastAnswerTime?: number; // ms taken to answer
   lastAnswerCorrect?: boolean;
+  joinedAt?: string;
 }
 
 interface Room {
@@ -59,10 +69,103 @@ interface Room {
   reactions: { id: string; emoji: string; userId: string; username: string; timestamp: number }[];
   activityFeed: string[];
   lastUpdate: number;
+  hostId?: string;
+  createdAt?: string;
 }
 
 // Global In-Memory Room Store
 const rooms = new Map<string, Room>();
+
+// Helper to sync local room memory state to Firestore in real-time (Scalable hybrid strategy)
+async function syncRoomStateToFirestore(roomCode: string) {
+  const room = rooms.get(roomCode);
+  if (!room) return;
+
+  try {
+    const roomRef = doc(db, "rooms", roomCode);
+    const { players, ...roomMetadata } = room;
+
+    // 1. Write core room parameters
+    await setDoc(roomRef, {
+      ...roomMetadata,
+      hostId: roomMetadata.hostId || "system",
+      createdAt: roomMetadata.createdAt || new Date().toISOString()
+    });
+
+    // 2. Write player positions in players subcollection for massive scale
+    const playerPromises = players.map((p) => {
+      const playerRef = doc(db, "rooms", roomCode, "players", p.id);
+      return setDoc(playerRef, {
+        ...p,
+        joinedAt: p.joinedAt || new Date().toISOString()
+      });
+    });
+    await Promise.all(playerPromises);
+  } catch (err) {
+    console.error(`Error syncing room ${roomCode} to Firestore: `, err);
+  }
+}
+
+// Background Server loop for lock-step realtime game tick updates to Firestore
+setInterval(() => {
+  rooms.forEach(async (room, roomCode) => {
+    if (room.status !== "active") return;
+
+    if (room.timer > 0) {
+      room.timer -= 1;
+      room.lastUpdate = Date.now();
+
+      // Bot turn simulation: If timer starts to drop, let Bots randomly pick answers!
+      if (room.timer <= 11) {
+        room.players.forEach((p) => {
+          if (p.isBot && p.lastAnswerTime === undefined) {
+            const q = room.questions[room.currentQuestionIndex];
+            const botSkill = Math.random(); // Bot accuracy based on dice roll
+            const isCorrect = botSkill > 0.3; // 70% accuracy
+            const selectedIdx = isCorrect ? q.correctIndex : (q.correctIndex + Math.floor(Math.random() * 3) + 1) % 4;
+
+            p.lastAnswerTime = Math.floor(Math.random() * 6000) + 1500; // takes 1.5 - 7.5s to respond
+            p.lastAnswerCorrect = isCorrect;
+
+            if (isCorrect) {
+              p.streak = (p.streak || 0) + 1;
+              p.comboCount = (p.comboCount || 0) + 1;
+              const speedBonus = Math.max(50, Math.floor((15000 - p.lastAnswerTime) / 100));
+              const streakBonus = Math.min(100, (p.streak || 1) * 15);
+              const points = 500 + speedBonus + streakBonus;
+              p.score += points;
+            } else {
+              p.streak = 0;
+              p.comboCount = 0;
+            }
+          }
+        });
+      }
+
+      // Sync ticking states to Firestore database
+      try {
+        const roomRef = doc(db, "rooms", roomCode);
+        await updateDoc(roomRef, {
+          timer: room.timer,
+          lastUpdate: room.lastUpdate
+        });
+
+        // Sync bots subcollections
+        const botPlayers = room.players.filter(p => p.isBot);
+        const botPromises = botPlayers.map((bot) => {
+          const playerRef = doc(db, "rooms", roomCode, "players", bot.id);
+          return setDoc(playerRef, {
+            ...bot,
+            joinedAt: bot.joinedAt || new Date().toISOString()
+          });
+        });
+        await Promise.all(botPromises);
+      } catch (err) {
+        console.error(`Failed ticking room ${roomCode} inside Firestore:`, err);
+      }
+    }
+  });
+}, 1000);
 
 // High-Quality Default Quizzes
 const DEFAULT_QUIZZES: Record<string, { title: string; description: string; category: string; difficulty: string; questions: QuizQuestion[] }> = {
@@ -445,6 +548,7 @@ Optimize questions to be intensely engaging, educational, and fun. Avoid boring,
     }
 
     rooms.set(roomCode, room);
+    await syncRoomStateToFirestore(roomCode);
     res.json({ success: true, roomCode, room });
   } catch (error: any) {
     console.error("AI Room Creation Error: ", error);
@@ -501,7 +605,7 @@ app.get("/api/rooms/:code", (req, res) => {
 });
 
 // Join Room
-app.post("/api/rooms/:code/join", (req, res) => {
+app.post("/api/rooms/:code/join", async (req, res) => {
   const code = req.params.code.toUpperCase();
   const { username, avatar } = req.body;
   const room = rooms.get(code);
@@ -533,11 +637,13 @@ app.post("/api/rooms/:code/join", (req, res) => {
   room.activityFeed.push(`${avatar || "🎮"} ${username} breached the arena lobby!`);
   room.lastUpdate = Date.now();
 
+  await syncRoomStateToFirestore(code);
+
   res.json({ success: true, player: newPlayer, room });
 });
 
 // Trigger Start Game
-app.post("/api/rooms/:code/start", (req, res) => {
+app.post("/api/rooms/:code/start", async (req, res) => {
   const code = req.params.code.toUpperCase();
   const room = rooms.get(code);
 
@@ -558,11 +664,13 @@ app.post("/api/rooms/:code/start", (req, res) => {
 
   room.activityFeed.push("🎯 Arena Combat Activated! Round 1 initiated.");
 
+  await syncRoomStateToFirestore(code);
+
   res.json({ success: true, room });
 });
 
 // Submit Answer
-app.post("/api/rooms/:code/submit", (req, res) => {
+app.post("/api/rooms/:code/submit", async (req, res) => {
   const code = req.params.code.toUpperCase();
   const { playerId, optionIndex, timeSpentMs } = req.body;
   const room = rooms.get(code);
@@ -606,11 +714,13 @@ app.post("/api/rooms/:code/submit", (req, res) => {
 
   room.lastUpdate = Date.now();
 
+  await syncRoomStateToFirestore(code);
+
   res.json({ success: true, matches: isCorrect, correctIndex: currentQ.correctIndex, player, room });
 });
 
 // Submit Reaction Burst
-app.post("/api/rooms/:code/reaction", (req, res) => {
+app.post("/api/rooms/:code/reaction", async (req, res) => {
   const code = req.params.code.toUpperCase();
   const { emoji, userId, username } = req.body;
   const room = rooms.get(code);
@@ -634,11 +744,13 @@ app.post("/api/rooms/:code/reaction", (req, res) => {
     room.reactions.shift();
   }
 
+  await syncRoomStateToFirestore(code);
+
   res.json({ success: true, reaction });
 });
 
 // Force Advance to Next Question / End
-app.post("/api/rooms/:code/next", (req, res) => {
+app.post("/api/rooms/:code/next", async (req, res) => {
   const code = req.params.code.toUpperCase();
   const room = rooms.get(code);
 
@@ -663,6 +775,8 @@ app.post("/api/rooms/:code/next", (req, res) => {
 
     room.activityFeed.push(`🎯 Arena Advanced! Welcoming Question ${nextIndex + 1}`);
   }
+
+  await syncRoomStateToFirestore(code);
 
   res.json({ success: true, room });
 });

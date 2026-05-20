@@ -5,6 +5,8 @@ import {
   Home, ChevronDown, CheckCircle, XCircle, Flame, Clock, Sparkles
 } from "lucide-react";
 import { Room, Player } from "../types";
+import { doc, updateDoc, increment, arrayUnion } from "firebase/firestore";
+import { db, auth } from "../lib/firebase";
 
 interface ResultsScreenProps {
   roomCode: string;
@@ -82,6 +84,39 @@ export default function ResultsScreen({ roomCode, currentPlayer, room, onReplay,
 
     return () => clearInterval(timer);
   }, [myFinalScore, activeTab]);
+
+  // Save game results dynamically to Firestore on load
+  useEffect(() => {
+    const saveCompletedGameStats = async () => {
+      const user = auth.currentUser;
+      if (!user) return;
+
+      try {
+        const userRef = doc(db, "users", user.uid);
+        const trophyWon = myRank === 1;
+        
+        // Dynamic stats updates
+        await updateDoc(userRef, {
+          xp: increment(myFinalScore),
+          gamesPlayed: increment(1),
+          wins: increment(trophyWon ? 1 : 0),
+          badges: arrayUnion({
+            id: `badge-${Date.now()}`,
+            name: trophyWon ? "Podium Gladiator" : "Honorary Contender",
+            descr: trophyWon 
+              ? `Conquered first place inside match lobby ${roomCode}` 
+              : `Finished with a high rank score inside arena ${roomCode}`,
+            icon: trophyWon ? "🏆" : "🎖️",
+            unlockedAt: new Date().toISOString()
+          })
+        });
+      } catch (err) {
+        console.error("Failed persisting final match scores to Firestore database: ", err);
+      }
+    };
+
+    saveCompletedGameStats();
+  }, [roomCode, myFinalScore, myRank]);
 
   // Pure HTML5 corner-exploding Confetti with gravity pull
   useEffect(() => {
